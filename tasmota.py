@@ -69,10 +69,6 @@ class Handler:
             Domoticz.Error(
                 "Handler::__init__: Domoticz Python env error {}".format(errmsg))
 
-        # So far only STATUS, STATE, SENSOR and RESULT are used. Others just for research...
-        self.topics = ['INFO1', 'STATE', 'SENSOR', 'RESULT', 'STATUS',
-                       'STATUS5', 'STATUS8', 'STATUS10', 'STATUS11', 'ENERGY']
-
         self.prefix = [None] + prefixes
         self.tasmotaDevices = tasmotaDevices
         self.subscriptions = subscriptions
@@ -118,9 +114,9 @@ class Handler:
             topic = topic.replace('%topic%', '+')
             subs.append(topic.replace('%prefix%', self.prefix[2]) + '/+')
             subs.append(topic.replace('%prefix%', self.prefix[3]) + '/+')
-        Debug('\nHandler::onMQTTConnected: Subscriptions: {}'.format(repr(subs)), 'Once')
+        Debug('\nHandler::onMQTTConnected: Subscriptions: {}'.format(repr(subs)), 'One')
         self.mqttClient.subscribe(subs)
-
+        self.mqttClient.publish('cmnd/tasmotas/status0', '')     # call al tasmotas to identify themselves
 
 
     # Process incoming MQTT messages from Tasmota devices
@@ -132,8 +128,6 @@ class Handler:
         subtopics = topic.split('/')
         tail = subtopics[-1]
  
-        if tail not in self.topics: return True
-
         # Different Tasmota devices can have different FullTopic patterns.
         # All FullTopic patterns we care about are in self.subscriptions (plugin config)
         # Tasmota devices will be identified by a hex hash from FullTopic without %prefix%
@@ -246,7 +240,7 @@ class MessageHandler:   # Is called by MessageHandlerList if it finds respondsTo
 
 class DummyHandler(MessageHandler):
     def handle(self, unitName, m, values, handled, ourValues):
-        Debug('DummyHandler({}, {}, {}, {}'.format(unitName, m.group(), repr(values), repr(handled)), 'One')
+        Debug('DummyHandler({}, {}, {}, {}'.format(unitName, m.group(), repr(values), repr(handled)))#, 'One')
         return True
 
 class DeviceHandler(MessageHandler):
@@ -267,8 +261,8 @@ class DeviceHandler(MessageHandler):
                 if unit not in Devices: break
             else: Debug('getUnit: no device number free', 'One');   return None
             
-            Debug('DeviceHandler::getUnit: Create unit of type <<{}>> with ID <<{}>>'.format(self.typeName, ID))
-            Domoticz.Device(Name=str(unit), Unit=unit, TypeName=self.typeName, Used=1).Create()
+            Debug('DeviceHandler::getUnit: Create unit of type <<{}>> with ID <<{}>>'.format(self.typeName, ID), 'One')
+            Domoticz.Device(Name=str(unit), Unit=unit, DeviceID=ID, TypeName=self.typeName, Used=1).Create()
             if not unit in Devices:
                 Debug('DeviceHandler::getUnit failed to create unit of type <<{}>> with ID <<{}>>'.format(self.typeName, ID), 'One')
                 return None
@@ -279,7 +273,7 @@ class DeviceHandler(MessageHandler):
             setConfigItem(ID+':Unit', unit)
         return unit
 
-    def update(self, unitName, unit, values, ID):
+    def update(self, unitName, unit, values, ID, friendlyName):
         if not self.updArgs or unit not in Devices: return
        
         rssi    = values.get('RSSI')
@@ -299,12 +293,16 @@ class DeviceHandler(MessageHandler):
             #Debug('{}, {}, {}, {}, {}'.format(ID, repr(oldRSSI), repr(rssi), repr(rssi-oldRSSI), repr(now-lastUpdate)), 'One')
         else:
             rssi    = 12    # means 'No RSSI present'
-            
+         
+        # Do not update the Friendly Name with every 'normal' update. Update it only when there is a Friendly Name update
+        #optionalArgs    = ', "Name":"{}", "SignalLevel":{}, "BatteryLevel":{}'.format(friendlyName, rssi, values.get('Battery', 255))
         optionalArgs    = ', "SignalLevel":{}, "BatteryLevel":{}'.format(rssi, values.get('Battery', 255))
-        Debug('Updating({}, {},   Image: {}'.format(str(unit), repr(values), Devices[unit].Image))#, 'One')
+        Debug('Updating({}, {},   Image: {})'.format(str(unit), repr(values), Devices[unit].Image))#, 'One')
+        Debug(self.updArgs.format(*values.values()) + optionalArgs)#, 'One') 
         Devices[unit].Update(**eval('{' + self.updArgs.format(*values.values()) + optionalArgs + '}')) 
         
-
+    def setName(self, unit, newName):
+        Devices[unit].Update(nValue=0, sValue="", Name=newName)     # This will give a warning because of invalid sValue. Ignore it. How else do we update only name?
 
 class SensorDeviceHandler(DeviceHandler):
     def handle(self, unitName, m, values, handled, ourValues):
@@ -317,7 +315,7 @@ class SensorDeviceHandler(DeviceHandler):
             friendlyName= friendlyName + suffix
 
         unit    = self.getUnit(ID, friendlyName)
-        self.update(unitName, unit, ourValues, ID)
+        self.update(unitName, unit, ourValues, ID, friendlyName)
         return True
 
 class PowerDeviceHandler(DeviceHandler):
@@ -332,19 +330,40 @@ class PowerDeviceHandler(DeviceHandler):
         friendlyName    = (m.groups()[0]=='POWER' and n<=len(friendlyNames) and friendlyNames[n-1] or deviceName + ' ' + m.groups()[0] + str(n))
         Debug('PowerDeviceHandler("{}", "{}", "{}")'.format(ID, friendlyName, repr(ourValues)))
         unit    = self.getUnit(ID, friendlyName)
-        self.update(unitName, unit, ourValues, ID)
+        self.update(unitName, unit, ourValues, ID, friendlyName)
         return True
 
 class NameHandler(MessageHandler):
     def handle(self, unitName, m, values, handled, ourValues):
-        Debug('NameHandler({}, {}, {}, {}'.format(unitName, m.group(), repr(values), repr(handled)),'One')
+        Debug('NameHandler({}, {}, {}, {}'.format(unitName, m.group(), repr(values), repr(handled)),'On')
         setConfigItem(unitName+':'+m.group(), values[m.group()])
         return True
 
+class BLEReadNameHandler(DeviceHandler):
+    def handle(self, unitName, m, values, handled, ourValues):
+        Debug('BLEReadNameHandler({}, {}, {}, {}'.format(unitName, m.group(), repr(values), repr(handled)),'On')
+        if values['svc']=='0x1800' and values['char']=='0x2a00':
+            newName = bytes.fromhex(values['read']).decode('utf-8')
+            Debug(newName)
+            ID      = values['MAC']
+            unit    = self.getUnit(ID, newName)
+            if unit:
+                self.setName(unit, newName)
+        return True
+
+# 13:02:11.956 MQT: tele/tasmota_FBBC2C/BLE = {"BLEOperation":{"opid":"2","stat":"3","state":"DONEREAD","MAC":"A4C1389628F7","svc":"0x1800","char":"0x2a00","read":"4769657A656E6B616D6572"}}
+BLEOperationsHandlers = MessageHandlerList([
+    BLEReadNameHandler(r'(read)', ['MAC', 'svc', 'char']),
+])
+
+BLEHandlers = MessageHandlerList([
+    MessageHandler(r'(BLEOperation)',   switchTo=BLEOperationsHandlers  ),
+])
+
 sensorDeviceHandlers    = MessageHandlerList([
     SensorDeviceHandler(r'(Temperature)(\d*)', ['Humidity{1}', 'Pressure{1}'],  typeName='Temp+Hum+Baro',   updArgs=' "nValue":0, "sValue":"{0};{1};0;{2};7"'   ),
-    SensorDeviceHandler(r'(Temperature)(\d*)', ['Humidity{1}'],                 typeName='Temp+Hum+Baro',   updArgs=' "nValue":0, "sValue":"{0};{1};0;1030;7"'  ),
-    SensorDeviceHandler(r'(Temperature)(\d*)', ['Humidity{1}'],                 typeName='Temp+Hum',        updArgs=' "nValue":round({1}), "sValue":"{0}"'      ),
+    #SensorDeviceHandler(r'(Temperature)(\d*)', ['Humidity{1}'],                 typeName='Temp+Hum+Baro',   updArgs=' "nValue":0, "sValue":"{0};{1};0;1030;7"'  ),
+    SensorDeviceHandler(r'(Temperature)(\d*)', ['Humidity{1}'],                 typeName='Temp+Hum',        updArgs=' "nValue":0, "sValue":"{0};{1};0"'      ),
     SensorDeviceHandler(r'(A)(\d*)'),
     SensorDeviceHandler(r'(Humidity)(\d*)',                                     typeName='Humidity',        updArgs=' "nValue":round({0}), "sValue":""'    ),
     SensorDeviceHandler(r'(Illuminance)(\d*)'),
@@ -355,9 +374,9 @@ sensorDeviceHandlers    = MessageHandlerList([
 ])
 
 powerDeviceHandlers    = MessageHandlerList([
-    PowerDeviceHandler(r'(POWER)(\d*)', ['Channel{1}'], typeName='Dimmer',      updArgs=' "nValue":"{0}"=="ON" and 2 or 0, "sValue":"{1}"'          ),  # so15 1
+    PowerDeviceHandler(r'(POWER)(\d*)', ['Channel{1}'], typeName='Dimmer',      updArgs=' "nValue":"{0}"=="ON" and 2 or 0, "sValue":"{1}"'          ),  # so15 1, lamp dimmer, gamma curve
     PowerDeviceHandler(r'(POWER)(\d*)',                 typeName='Switch',      updArgs=' "nValue":"{0}"=="ON" and 1 or 0, "sValue":""'             ),
-    PowerDeviceHandler(r'(PWM)(\d+)',                   typeName='Dimmer',      updArgs=' "nValue":"{0}"!="0"  and 2 or 0, "sValue":str(round({0}/10.23))',     createArgs={'Image':7} )   # so15 0
+    PowerDeviceHandler(r'(PWM)(\d+)',                   typeName='Dimmer',      updArgs=' "nValue":"{0}"!="0"  and 2 or 0, "sValue":str(round({0}/10.23))',     createArgs={'Image':7} )   # so15 0, fan icon, linear
 ])
 
 statusHandlers    = MessageHandlerList([    # Handles Status:
@@ -381,21 +400,22 @@ class DomoticzCommandHandler(MessageHandler):
         self.msg    = msg
 
     def handle(self, unitName, m, values, handled, ourValues):
-        #Debug('PowerDeviceHandler({}, {}, {}, {}, {}'.format(unitName, m.group(), repr(values), repr(handled), repr(ourValues)))#,'One')
+        Debug('PowerDeviceHandler({}, {}, {}, {}, {}'.format(unitName, m.group(), repr(values), repr(handled), repr(ourValues)))#,'One')
         g   = m.groups()
         val = list(g) + [*sum(list(zip([*ourValues],ourValues.values())),())][2:]
-        #Debug('DomoticzCommandHandler::handle val={}'.format(repr(val)))
+        Debug('DomoticzCommandHandler::handle val={}'.format(repr(val)), 'On')
         return eval('{' + self.msg.format(*val) + '}')
 
 domoticzHandlers   = MessageHandlerList([
-    DomoticzCommandHandler(r'([^&]*)&(POWER)(\d+)',     ['On'],         msg = '"{1}{2}": "{3}"'),     # {0} is tasmota_XXX, {1} is POWER, {2} is 1-32, {3} is 'On', {4} is Level 
-    DomoticzCommandHandler(r'([^&]*)&(POWER)(\d+)',     ['Off'],        msg = '"{1}{2}": "{3}"'),     # {0} is tasmota_XXX, {1} is POWER, {2} is 1-32, {3} is 'On', {4} is Level 
+    DomoticzCommandHandler(r'([^&]*)&(POWER)(\d+)',     ['On'],         msg = '"{1}{2}": "{3}"'),               # {0} is tasmota_XXX, {1} is POWER, {2} is 1-32, {3} is 'On', {4} is Level 
+    DomoticzCommandHandler(r'([^&]*)&(POWER)(\d+)',     ['Off'],        msg = '"{1}{2}": "{3}"'),               # {0} is tasmota_XXX, {1} is POWER, {2} is 1-32, {3} is 'On', {4} is Level 
     DomoticzCommandHandler(r'([^&]*)&(POWER)(\d+)',     ['Set Level'],  msg = '"Channel{2}": "{4}"'), 
-    DomoticzCommandHandler(r'([^&]*)&(PWM)(\d+)',       ['Set Level'],  msg = '"{1}{2}": round({4}*10.23)'),
-    DomoticzCommandHandler(r'([^&]*)&(PWM)(\d+)',       ['Off'],        msg = '"{1}{2}": 0')            # 'On' is handled by Set Level 'Off' remembers last level.
+    DomoticzCommandHandler(r'([^&]*)&(PWM)(\d+)',       ['Set Level'],  msg = '"{1}{2}": round({4}*10.23)'),    # Level gaat van 0-100, maar PWM heeft een range van 0-1023
+    DomoticzCommandHandler(r'([^&]*)&(PWM)(\d+)',       ['Off'],        msg = '"{1}{2}": 0')                    # 'On' is handled by Set Level. 'Off' remembers last level.
 ])
 
 topLevelHandlers    = MessageHandlerList([
+    MessageHandler(r'(BLE)',            switchTo=BLEHandlers            ),
     MessageHandler(r'(SENSOR)',         switchTo=sensorDeviceHandlers   ),
     MessageHandler(r'(RESULT|STATE)',   switchTo=powerDeviceHandlers    ),
     MessageHandler(r'(STATUS)(\d*)',    switchTo=STATUSHandlers         ),

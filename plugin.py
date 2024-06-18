@@ -1,15 +1,15 @@
 """
 <plugin 
     key="LionTasmoticz" 
-    name="Autodiscovery of Tasmota Devices"
-    version="1.0.0"
+    name="Autodiscovery of Tasmota Devices with multi-device support"
+    version="1.0.1"
     author="Henk de Leeuw" 
     externallink="https://github.com/Lion251/LionTasmoticz">
    
     <description>
         Plugin to discover and operate Tasmota devices through MQTT
         <br/>
-        so far only simple switches and some sensors are implemented
+        I have added thermo-hygrometers, friendly name support coming!
         <br/>
     </description>
     <params>
