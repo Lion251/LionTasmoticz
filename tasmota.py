@@ -306,7 +306,7 @@ class DeviceHandler(MessageHandler):
         
     def setName(self, unit, newName):
         Debug('setName({}, {})'.format(unit, repr(newName)),'One')
-        Devices[unit].Update(nValue=0, sValue="", Name=newName, SuppressTriggers=True)     # This will give a warning because of invalid sValue. Ignore it. How else do we update only name?
+        Devices[unit].Update(nValue=0, sValue="", Name=newName, SuppressTriggers=True)     # SuppressTriggers=True makes Devices[].Update ignore nVale and sValue
 
 class SensorDeviceHandler(DeviceHandler):
     def handle(self, unitName, m, values, handled, ourValues):
@@ -322,7 +322,7 @@ class SensorDeviceHandler(DeviceHandler):
         self.update(unitName, unit, ourValues, ID, friendlyName)
         if isNew:
             topic   = "cmnd/" + unitName + "/BLEName"
-            mqtt.publish(topic, ID) # Ugly! Call mqttClient through global variable. We are called from it, so we know its connected. 
+            mqtt.publish(topic, ID) # Ugly! Call mqttClient through global variable. We are called from a mqtt message, so we know it's connected. 
 
         return True
 
