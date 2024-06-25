@@ -59,7 +59,7 @@ def setConfigItem(Key=None, Value=None, dontShow=False):
         Domoticz.Error("Domoticz.Configuration operation failed: '"+str(inst)+"'")
     return Config
 
-
+mqtt    = None  # Ugly! Global variable to hold mqttClient so we can call it from updateDevices that knows nothing of our Handler
 # Handles incoming Tasmota messages from MQTT or Domoticz commands for Tasmota devices
 class Handler:
     def __init__(self, subscriptions, prefixes, tasmotaDevices, mqttClient, devices):
@@ -73,6 +73,8 @@ class Handler:
         self.tasmotaDevices = tasmotaDevices
         self.subscriptions = subscriptions
         self.mqttClient = mqttClient
+        global mqtt
+        mqtt    = mqttClient
 
         # I don't understand variable (in)visibility
         global Devices
@@ -271,7 +273,8 @@ class DeviceHandler(MessageHandler):
             Devices[unit].Update(nValue=0, sValue="", Name=friendlyName, SuppressTriggers=True, **self.createArgs),
             Debug('DeviceHandler::getUnit options string: {}'.format(repr(Devices[unit].Options)))
             setConfigItem(ID+':Unit', unit)
-        return unit
+            return unit, True
+        return unit, False
 
     def update(self, unitName, unit, values, ID, friendlyName):
         if not self.updArgs or unit not in Devices: return
@@ -302,7 +305,8 @@ class DeviceHandler(MessageHandler):
         Devices[unit].Update(**eval('{' + self.updArgs.format(*values.values()) + optionalArgs + '}')) 
         
     def setName(self, unit, newName):
-        Devices[unit].Update(nValue=0, sValue="", Name=newName)     # This will give a warning because of invalid sValue. Ignore it. How else do we update only name?
+        Debug('setName({}, {})'.format(unit, repr(newName)),'One')
+        Devices[unit].Update(nValue=0, sValue="", Name=newName, SuppressTriggers=True)     # This will give a warning because of invalid sValue. Ignore it. How else do we update only name?
 
 class SensorDeviceHandler(DeviceHandler):
     def handle(self, unitName, m, values, handled, ourValues):
@@ -314,8 +318,12 @@ class SensorDeviceHandler(DeviceHandler):
             ID          = ID + suffix
             friendlyName= friendlyName + suffix
 
-        unit    = self.getUnit(ID, friendlyName)
+        unit, isNew     = self.getUnit(ID, friendlyName)
         self.update(unitName, unit, ourValues, ID, friendlyName)
+        if isNew:
+            topic   = "cmnd/" + unitName + "/BLEName"
+            mqtt.publish(topic, ID) # Ugly! Call mqttClient through global variable. We are called from it, so we know its connected. 
+
         return True
 
 class PowerDeviceHandler(DeviceHandler):
@@ -329,7 +337,7 @@ class PowerDeviceHandler(DeviceHandler):
         friendlyNames   = getConfigItem(unitName+':FriendlyName', [])
         friendlyName    = (m.groups()[0]=='POWER' and n<=len(friendlyNames) and friendlyNames[n-1] or deviceName + ' ' + m.groups()[0] + str(n))
         Debug('PowerDeviceHandler("{}", "{}", "{}")'.format(ID, friendlyName, repr(ourValues)))
-        unit    = self.getUnit(ID, friendlyName)
+        unit, isNew    = self.getUnit(ID, friendlyName)
         self.update(unitName, unit, ourValues, ID, friendlyName)
         return True
 
@@ -339,21 +347,21 @@ class NameHandler(MessageHandler):
         setConfigItem(unitName+':'+m.group(), values[m.group()])
         return True
 
+# 13:02:11.956 MQT: tele/tasmota_FBBC2C/BLE = {"BLEOperation":{"opid":"2","stat":"3","state":"DONEREAD","MAC":"A4C1389628F7","svc":"0x1800","char":"0x2a00","read":"4769657A656E6B616D6572"}}
 class BLEReadNameHandler(DeviceHandler):
     def handle(self, unitName, m, values, handled, ourValues):
-        Debug('BLEReadNameHandler({}, {}, {}, {}'.format(unitName, m.group(), repr(values), repr(handled)),'On')
-        if values['svc']=='0x1800' and values['char']=='0x2a00':
+        Debug('BLEReadNameHandler({}, {}, {}, {}'.format(unitName, m.group(), repr(values), repr(handled)))#,'On')
+        if values['state']=='DONEREAD' and values['svc']=='0x1800' and values['char']=='0x2a00':
             newName = bytes.fromhex(values['read']).decode('utf-8')
-            Debug(newName)
             ID      = values['MAC']
-            unit    = self.getUnit(ID, newName)
-            if unit:
+            unit, isNew    = self.getUnit(ID, newName)
+            if unit and newName:
                 self.setName(unit, newName)
         return True
 
 # 13:02:11.956 MQT: tele/tasmota_FBBC2C/BLE = {"BLEOperation":{"opid":"2","stat":"3","state":"DONEREAD","MAC":"A4C1389628F7","svc":"0x1800","char":"0x2a00","read":"4769657A656E6B616D6572"}}
 BLEOperationsHandlers = MessageHandlerList([
-    BLEReadNameHandler(r'(read)', ['MAC', 'svc', 'char']),
+    BLEReadNameHandler(r'(read)', ['state', 'MAC', 'svc', 'char']),
 ])
 
 BLEHandlers = MessageHandlerList([
@@ -362,7 +370,7 @@ BLEHandlers = MessageHandlerList([
 
 sensorDeviceHandlers    = MessageHandlerList([
     SensorDeviceHandler(r'(Temperature)(\d*)', ['Humidity{1}', 'Pressure{1}'],  typeName='Temp+Hum+Baro',   updArgs=' "nValue":0, "sValue":"{0};{1};0;{2};7"'   ),
-    #SensorDeviceHandler(r'(Temperature)(\d*)', ['Humidity{1}'],                 typeName='Temp+Hum+Baro',   updArgs=' "nValue":0, "sValue":"{0};{1};0;1030;7"'  ),
+    #SensorDeviceHandler(r'(Temperature)(\d*)', ['Humidity{1}'],                 typeName='Temp+Hum+Baro',   updArgs=' "nValue":0, "sValue":"{0};{1};0;1030;7"'  ),     #If you want decimals in humidity, create a weather station instead of a Temp+Hum, Baro will be fake then
     SensorDeviceHandler(r'(Temperature)(\d*)', ['Humidity{1}'],                 typeName='Temp+Hum',        updArgs=' "nValue":0, "sValue":"{0};{1};0"'      ),
     SensorDeviceHandler(r'(A)(\d*)'),
     SensorDeviceHandler(r'(Humidity)(\d*)',                                     typeName='Humidity',        updArgs=' "nValue":round({0}), "sValue":""'    ),
