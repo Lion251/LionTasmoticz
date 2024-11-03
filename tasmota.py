@@ -328,7 +328,7 @@ class SensorDeviceHandler(DeviceHandler):
 
 class PowerDeviceHandler(DeviceHandler):
     def handle(self, unitName, m, values, handled, ourValues):
-        Debug('PowerDeviceHandler({}, {}, {}, {}'.format(unitName, m.group(), repr(values), repr(handled)))
+        Debug('PowerDeviceHandler({}, {}, {}, {}'.format(unitName, m.group(), repr(values), repr(handled)), 'One')
         n               = int(m.groups()[1] or 1)       # POWER is POWER1, PWM is PWM1
         fullName        = m.groups()[0]+str(n)
         ID              = '&'.join([unitName, fullName]) #+ ['{}'.format(also).format(0,n) for also in self.alsoNeeded])
@@ -341,16 +341,16 @@ class PowerDeviceHandler(DeviceHandler):
         self.update(unitName, unit, ourValues, ID, friendlyName)
         return True
 
-class NameHandler(MessageHandler):
+class NameHandler(MessageHandler):      # sets ConfigItems for DeviceName (single name) or FriendlyName (array for all switches)
     def handle(self, unitName, m, values, handled, ourValues):
-        Debug('NameHandler({}, {}, {}, {}'.format(unitName, m.group(), repr(values), repr(handled)),'On')
+        Debug('NameHandler({}, {}, {}, {}'.format(unitName, m.group(), repr(values), repr(handled)),'One')
         setConfigItem(unitName+':'+m.group(), values[m.group()])
         return True
 
 # 13:02:11.956 MQT: tele/tasmota_FBBC2C/BLE = {"BLEOperation":{"opid":"2","stat":"3","state":"DONEREAD","MAC":"A4C1389628F7","svc":"0x1800","char":"0x2a00","read":"4769657A656E6B616D6572"}}
 class BLEReadNameHandler(DeviceHandler):
     def handle(self, unitName, m, values, handled, ourValues):
-        Debug('BLEReadNameHandler({}, {}, {}, {}'.format(unitName, m.group(), repr(values), repr(handled)))#,'On')
+        Debug('BLEReadNameHandler({}, {}, {}, {}'.format(unitName, m.group(), repr(values), repr(handled)))#,'One')
         if values['state']=='DONEREAD' and values['svc']=='0x1800' and values['char']=='0x2a00':
             newName = bytes.fromhex(values['read']).decode('utf-8')
             ID      = values['MAC']
@@ -358,6 +358,11 @@ class BLEReadNameHandler(DeviceHandler):
             if unit and newName:
                 self.setName(unit, newName)
         return True
+
+class FriendlyNameHandler(DeviceHandler):
+    def handle(self, unitName, m, values, handled, ourValues):
+        Debug('BLEReadNameHandler({}, {}, {}, {}'.format(unitName, m.group(), repr(values), repr(handled)))#,'One')
+
 
 # 13:02:11.956 MQT: tele/tasmota_FBBC2C/BLE = {"BLEOperation":{"opid":"2","stat":"3","state":"DONEREAD","MAC":"A4C1389628F7","svc":"0x1800","char":"0x2a00","read":"4769657A656E6B616D6572"}}
 BLEOperationsHandlers = MessageHandlerList([
@@ -381,10 +386,12 @@ sensorDeviceHandlers    = MessageHandlerList([
     SensorDeviceHandler(r'(AMBTMP)(\d*)',                                       typeName='Temperature',     updArgs=' "nValue":0, "sValue":"{0}"'   ),
 ])
 
-powerDeviceHandlers    = MessageHandlerList([
+
+RESULTHandlers    = MessageHandlerList([
     PowerDeviceHandler(r'(POWER)(\d*)', ['Channel{1}'], typeName='Dimmer',      updArgs=' "nValue":"{0}"=="ON" and 2 or 0, "sValue":"{1}"'          ),  # so15 1, lamp dimmer, gamma curve
     PowerDeviceHandler(r'(POWER)(\d*)',                 typeName='Switch',      updArgs=' "nValue":"{0}"=="ON" and 1 or 0, "sValue":""'             ),
-    PowerDeviceHandler(r'(PWM)(\d+)',                   typeName='Dimmer',      updArgs=' "nValue":"{0}"!="0"  and 2 or 0, "sValue":str(round({0}/10.23))',     createArgs={'Image':7} )   # so15 0, fan icon, linear
+    PowerDeviceHandler(r'(PWM)(\d+)',                   typeName='Dimmer',      updArgs=' "nValue":"{0}"!="0"  and 2 or 0, "sValue":str(round({0}/10.23))',     createArgs={'Image':7} ),   # so15 0, fan icon, linear
+    FriendlyNameHandler(r'(FriendlyName)(\d+)'),
 ])
 
 statusHandlers    = MessageHandlerList([    # Handles Status:
@@ -394,7 +401,7 @@ statusHandlers    = MessageHandlerList([    # Handles Status:
 STATUSHandlers    = MessageHandlerList([    # Handles STATUS[0-9]*
     MessageHandler(r'(Status)',                    switchTo=statusHandlers         ),   
     MessageHandler(r'(StatusSNS)',                 switchTo=sensorDeviceHandlers   ),   
-    MessageHandler(r'(StatusSTS)',                 switchTo=powerDeviceHandlers    )   
+    MessageHandler(r'(StatusSTS)',                 switchTo=RESULTHandlers    )   
 ])
 
 # domoticzHandlers zijn een buitenbeentje. respondsTo id het ID, alsoNeeded de _value_ van het Command uit onDomoticzCommand. Beide hebben een waarde die onbenut is.
@@ -425,7 +432,7 @@ domoticzHandlers   = MessageHandlerList([
 topLevelHandlers    = MessageHandlerList([
     MessageHandler(r'(BLE)',            switchTo=BLEHandlers            ),
     MessageHandler(r'(SENSOR)',         switchTo=sensorDeviceHandlers   ),
-    MessageHandler(r'(RESULT|STATE)',   switchTo=powerDeviceHandlers    ),
+    MessageHandler(r'(RESULT|STATE)',   switchTo=RESULTHandlers         ),  # STATE gives the same type of messages as RESULT => common handler
     MessageHandler(r'(STATUS)(\d*)',    switchTo=STATUSHandlers         ),
     MessageHandler(r'(DOMOTICZ)',       switchTo=domoticzHandlers       ),
     DummyHandler(  r'(.*)')     # ignore everything we don't recognize, but claim it, so the contents won't be parsed any further

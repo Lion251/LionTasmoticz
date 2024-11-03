@@ -77,7 +77,7 @@ class Plugin:
                     Domoticz.Debugging(2)
                 
                 global pluginDebug
-                pluginDebug = False
+                pluginDebug = True
                 setTasmotaDebug(True)
                 setMqttDebug(False)
                 
@@ -108,9 +108,7 @@ class Plugin:
     # Let tasmotaHandler react to commands from Domoticz
 
     def onCommand(self, Unit, Command, Level, Color):
-        if self.mqttClient is None:
-            return False
-        return self.tasmotaHandler.onDomoticzCommand(Unit, Command, Level, Color)
+        return self.tasmotaHandler.onDomoticzCommand(Unit, Command, Level, Color) if self.mqttClient else False
 
     def onConnect(self, Connection, Status, Description):
         Debug("Plugin::onConnect")
@@ -137,6 +135,9 @@ class Plugin:
                     self.mqttClient.ping()
             except Exception as e:
                 Domoticz.Error("Exception:Plugin::onHeartbeat error {}".format(str(e)))
+
+    def onDeviceModified(self, Unit):
+        Debug("Plugin::onDeviceModified for Unit: "+str(Unit))
 
     # Let tasmotaHandler subscribe its topics
 
@@ -185,6 +186,11 @@ def onMessage(Connection, Data):
 def onCommand(Unit, Command, Level, Color):
     global _plugin
     _plugin.onCommand(Unit, Command, Level, Color)
+
+
+def onDeviceModified(Unit):
+    global _plugin
+    _plugin.onDeviceModified(Unit)
 
 
 def onHeartbeat():
