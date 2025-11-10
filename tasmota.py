@@ -311,12 +311,12 @@ class DeviceHandler(MessageHandler):
          
         # Do not update the Friendly Name with every 'normal' update. Update it only when there is a Friendly Name update
         #optionalArgs    = ', "Name":"{}", "SignalLevel":{}, "BatteryLevel":{}'.format(friendlyName, rssi, values.get('Battery', 255))
-        optionalArgs    = ', "SignalLevel":{}, "BatteryLevel":{}'.format(rssi, values.get('Battery', 255))
+        optionalArgs    = ', "SignalLevel":{}, "BatteryLevel":{}, "Description":"{}"'.format(rssi, values.get('Battery', 255), getConfigItem(unitName+':IPAddress'))
         Debug('Updating({}, {},   Image: {})'.format(str(unit), repr(values), Devices[unit].Image))#, 'One')
         Debug(self.updArgs.format(*values.values()) + optionalArgs)#, 'One') 
         try:
             Devices[unit].Update(**eval('{' + self.updArgs.format(*values.values()) + optionalArgs + '}')) 
-        except Exeception as e:
+        except Exception as e:
             Debug('Updating({}, {},   Image: {})'.format(str(unit), repr(values), Devices[unit].Image), 'One')
             Debug(self.updArgs.format(*values.values()) + optionalArgs, 'One') 
             Domoticz.Error("DeviceHandler::update Device.Update Exception: {}".format(str(e)))
@@ -372,6 +372,14 @@ class NameHandler(MessageHandler):      # sets ConfigItems for DeviceName (singl
         setConfigItem(unitName+':'+m.group(), values[m.group()])
         return True
 
+class IPAddressHandler(MessageHandler):      # sets ConfigItems for DeviceName (single name) or FriendlyName (array for all switches)
+    def handle(self, unitName, m, values, handled, ourValues):
+        if values[m.group()] != '0.0.0.0': 
+            Debug('IPAddressHandler({}, {}, {}, {}'.format(unitName, m.group(), repr(values), repr(handled)),'One')
+            setConfigItem(unitName+':'+m.group(), values[m.group()])
+            #setTasmotaDebug('Off')
+            return True
+
 # 13:02:11.956 MQT: tele/tasmota_FBBC2C/BLE = {"BLEOperation":{"opid":"2","stat":"3","state":"DONEREAD","MAC":"A4C1389628F7","svc":"0x1800","char":"0x2a00","read":"4769657A656E6B616D6572"}}
 class BLEReadNameHandler(DeviceHandler):
     def handle(self, unitName, m, values, handled, ourValues):
@@ -386,7 +394,7 @@ class BLEReadNameHandler(DeviceHandler):
 
 class FriendlyNameHandler(DeviceHandler):
     def handle(self, unitName, m, values, handled, ourValues):
-        Debug('BLEReadNameHandler({}, {}, {}, {}'.format(unitName, m.group(), repr(values), repr(handled)))#,'One')
+        Debug('BLEReadNameHandler({}, {}, {}, {}'.format(unitName, m.group(), repr(values), repr(handled)),'One')
 
 
 # 13:02:11.956 MQT: tele/tasmota_FBBC2C/BLE = {"BLEOperation":{"opid":"2","stat":"3","state":"DONEREAD","MAC":"A4C1389628F7","svc":"0x1800","char":"0x2a00","read":"4769657A656E6B616D6572"}}
@@ -428,10 +436,15 @@ statusHandlers    = MessageHandlerList([    # Handles Status:
     NameHandler(r'(DeviceName|FriendlyName)')
 ])
 
+statusNetHandlers = MessageHandlerList([    # Handles StatusNET:
+    IPAddressHandler(r'(IPAddress)' ),
+])
+
 STATUSHandlers    = MessageHandlerList([    # Handles STATUS[0-9]*
     MessageHandler(r'(Status)',                    switchTo=statusHandlers         ),   
+    MessageHandler(r'(StatusNET)',                 switchTo=statusNetHandlers      ),   
     MessageHandler(r'(StatusSNS)',                 switchTo=sensorDeviceHandlers   ),   
-    MessageHandler(r'(StatusSTS)',                 switchTo=RESULTHandlers    )   
+    MessageHandler(r'(StatusSTS)',                 switchTo=RESULTHandlers         )   
 ])
 
 # domoticzHandlers zijn een buitenbeentje. respondsTo id het ID, alsoNeeded de _value_ van het Command uit onDomoticzCommand. Beide hebben een waarde die onbenut is.
