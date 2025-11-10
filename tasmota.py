@@ -49,7 +49,7 @@ def getConfigItem(Key=None, Default=None):
     return Value
         
 def setConfigItem(Key=None, Value=None, dontShow=False):
-    Debug('\ntasmota:setConfigItem({}, {})'.format(repr(Key), repr(Value)), Value and not dontShow and 'One')
+    Debug('\ntasmota:setConfigItem({}, {})'.format(repr(Key), repr(Value)), Value and not dontShow and 'One' or 'Off')
     try:
         Config = Domoticz.Configuration() or dict()
         if (Key != None):
@@ -205,7 +205,7 @@ class MessageHandlerList(list):
                     (type(values)==dict and (values | {'msgName':msgName}) or {})).items():  # If we don't recognize msgName, handle all separate parts of values. 
             if msg in handled: continue
             for x in self:
-                    #try:
+                try:
                     m   = re.fullmatch(x.respondsTo, msg)  
                     if m: 
                         h   = []        # handled in this round
@@ -222,8 +222,8 @@ class MessageHandlerList(list):
                             result  = x.handle(unitName, m, values, handled, ourValues)
                             if msg==msgName: return result # This needs a comment
                             else: break
-                    #except Exception as e:  
-                    #Debug('MessageHandlerList::handleMessage exception <<{}>> while evaluating <<{}>>'.format(str(e), str(msg)), 'One')
+                except Exception as e:  
+                    Debug('MessageHandlerList::handleMessage exception <<{}>> while evaluating <<{}>>'.format(str(e), str(msg)), 'One')
             else:
                 if msg!=msgName and type(val)==dict:  result = self.handleMessage(unitName, 'SubDevices', val | { 'msgName': msg }, handled)
         return result
@@ -254,23 +254,35 @@ class DeviceHandler(MessageHandler):
 
     def getUnit(self, ID, friendlyName):    # Finds unit for our ID and creates it if it doesn't exist
         unit    = getConfigItem(ID+':Unit', None)
-        #Debug('DeviceHandler::getUnit({}, {}, {})'.format(repr(ID), repr(friendlyName), repr(unit)), 'One')
+        Debug('DeviceHandler::getUnit({}, {}, {})'.format(repr(ID), repr(friendlyName), repr(unit)))#, 'One')
         if unit not in Devices or getConfigItem('Unit'+str(unit)+":ID") != ID:  # Check if there is a device and if the device is the correct one
             setConfigItem(ID+':Unit', None)                                     # Mark previous unit as invalid
-            if not self.typeName: Debug('No type name specified for ID ' + ID); return None
+            if not self.typeName: 
+                Debug('No type name specified for ID ' + ID, 'One'); 
+                return None, False
             
             for unit in range(1,255):
                 if unit not in Devices: break
-            else: Debug('getUnit: no device number free', 'One');   return None
+            else: 
+                Debug('DeviceHandler::getUnit({}, {})'.format(repr(ID), repr(friendlyName)), 'One')
+                Debug('DeviceHandler::getUnit: no unit number free', 'One');   
+                return None, False
             
             Debug('DeviceHandler::getUnit: Create unit of type <<{}>> with ID <<{}>>'.format(self.typeName, ID), 'One')
-            Domoticz.Device(Name=str(unit), Unit=unit, DeviceID=ID, TypeName=self.typeName, Used=1).Create()
+            try:
+                Domoticz.Device(Name=str(unit), Unit=unit, DeviceID=ID, TypeName=self.typeName, Used=1).Create()
+            except Exeception as e:
+                Domoticz.Error("DeviceHandler::getUnit Device.Create Exception: {}".format(str(e)))
             if not unit in Devices:
                 Debug('DeviceHandler::getUnit failed to create unit of type <<{}>> with ID <<{}>>'.format(self.typeName, ID), 'One')
-                return None
+                return None, False
             
             setConfigItem('Unit'+str(unit)+":ID", ID)
-            Devices[unit].Update(nValue=0, sValue="", Name=friendlyName, SuppressTriggers=True, **self.createArgs),
+            try:
+                Devices[unit].Update(nValue=0, sValue="", Name=friendlyName, SuppressTriggers=True, **self.createArgs)
+            except Exeception as e:
+                Domoticz.Error("DeviceHandler::getUnit Device.Update Exception: {}".format(str(e)))
+
             Debug('DeviceHandler::getUnit options string: {}'.format(repr(Devices[unit].Options)))
             setConfigItem(ID+':Unit', unit)
             return unit, True
@@ -302,7 +314,12 @@ class DeviceHandler(MessageHandler):
         optionalArgs    = ', "SignalLevel":{}, "BatteryLevel":{}'.format(rssi, values.get('Battery', 255))
         Debug('Updating({}, {},   Image: {})'.format(str(unit), repr(values), Devices[unit].Image))#, 'One')
         Debug(self.updArgs.format(*values.values()) + optionalArgs)#, 'One') 
-        Devices[unit].Update(**eval('{' + self.updArgs.format(*values.values()) + optionalArgs + '}')) 
+        try:
+            Devices[unit].Update(**eval('{' + self.updArgs.format(*values.values()) + optionalArgs + '}')) 
+        except Exeception as e:
+            Debug('Updating({}, {},   Image: {})'.format(str(unit), repr(values), Devices[unit].Image), 'One')
+            Debug(self.updArgs.format(*values.values()) + optionalArgs, 'One') 
+            Domoticz.Error("DeviceHandler::update Device.Update Exception: {}".format(str(e)))
         
     def setName(self, unit, newName):
         Debug('setName({}, {})'.format(unit, repr(newName)),'One')
@@ -315,20 +332,26 @@ class SensorDeviceHandler(DeviceHandler):
         friendlyName    = getConfigItem(ID+':DeviceName', values['msgName'])
         if not 'mac' in values:
             suffix      = ('msgName' in values and ' ' + values['msgName'] or '') + ' ' + m.group()
-            ID          = ID + suffix
+            ID          = (ID + suffix).replace(' ', '&')   # an ID cannot contain spaces; replace with '&'
             friendlyName= friendlyName + suffix
 
-        unit, isNew     = self.getUnit(ID, friendlyName)
-        self.update(unitName, unit, ourValues, ID, friendlyName)
-        if isNew:
-            topic   = "cmnd/" + unitName + "/BLEName"
-            mqtt.publish(topic, ID) # Ugly! Call mqttClient through global variable. We are called from a mqtt message, so we know it's connected. 
+        try:
+            unit, isNew     = self.getUnit(ID, friendlyName)
+            if not unit:
+                return False
+            self.update(unitName, unit, ourValues, ID, friendlyName)
+            if isNew:
+                topic   = "cmnd/" + unitName + "/BLEName"
+                mqtt.publish(topic, ID) # Ugly! Call mqttClient through global variable. We are called from a mqtt message, so we know it's connected. 
+        except Exception as e:
+            Domoticz.Error("SensorDeviceHandler::handle Exception: {}".format(str(e)))
+            return False
 
         return True
 
 class PowerDeviceHandler(DeviceHandler):
     def handle(self, unitName, m, values, handled, ourValues):
-        Debug('PowerDeviceHandler({}, {}, {}, {}'.format(unitName, m.group(), repr(values), repr(handled)), 'One')
+        Debug('PowerDeviceHandler({}, {}, {}, {}'.format(unitName, m.group(), repr(values), repr(handled)))#, 'One')
         n               = int(m.groups()[1] or 1)       # POWER is POWER1, PWM is PWM1
         fullName        = m.groups()[0]+str(n)
         ID              = '&'.join([unitName, fullName]) #+ ['{}'.format(also).format(0,n) for also in self.alsoNeeded])
@@ -338,12 +361,14 @@ class PowerDeviceHandler(DeviceHandler):
         friendlyName    = (m.groups()[0]=='POWER' and n<=len(friendlyNames) and friendlyNames[n-1] or deviceName + ' ' + m.groups()[0] + str(n))
         Debug('PowerDeviceHandler("{}", "{}", "{}")'.format(ID, friendlyName, repr(ourValues)))
         unit, isNew    = self.getUnit(ID, friendlyName)
+        if not unit:
+            return False
         self.update(unitName, unit, ourValues, ID, friendlyName)
         return True
 
 class NameHandler(MessageHandler):      # sets ConfigItems for DeviceName (single name) or FriendlyName (array for all switches)
     def handle(self, unitName, m, values, handled, ourValues):
-        Debug('NameHandler({}, {}, {}, {}'.format(unitName, m.group(), repr(values), repr(handled)),'One')
+        Debug('NameHandler({}, {}, {}, {}'.format(unitName, m.group(), repr(values), repr(handled)))#,'One')
         setConfigItem(unitName+':'+m.group(), values[m.group()])
         return True
 
@@ -373,17 +398,22 @@ BLEHandlers = MessageHandlerList([
     MessageHandler(r'(BLEOperation)',   switchTo=BLEOperationsHandlers  ),
 ])
 
+energyDeviceHandlers    = MessageHandlerList([
+    SensorDeviceHandler(r'Power', ['Total'],  typeName='kWh',                  updArgs=' "nValue":0, "sValue":"{0};"+str({1}*1000)'   ),
+])
+
 sensorDeviceHandlers    = MessageHandlerList([
     SensorDeviceHandler(r'(Temperature)(\d*)', ['Humidity{1}', 'Pressure{1}'],  typeName='Temp+Hum+Baro',   updArgs=' "nValue":0, "sValue":"{0};{1};0;{2};7"'   ),
     #SensorDeviceHandler(r'(Temperature)(\d*)', ['Humidity{1}'],                 typeName='Temp+Hum+Baro',   updArgs=' "nValue":0, "sValue":"{0};{1};0;1030;7"'  ),     #If you want decimals in humidity, create a weather station instead of a Temp+Hum, Baro will be fake then
     SensorDeviceHandler(r'(Temperature)(\d*)', ['Humidity{1}'],                 typeName='Temp+Hum',        updArgs=' "nValue":0, "sValue":"{0};{1};0"'      ),
-    SensorDeviceHandler(r'(A)(\d*)'),
+    #SensorDeviceHandler(r'(A)(\d*)'),
     SensorDeviceHandler(r'(Humidity)(\d*)',                                     typeName='Humidity',        updArgs=' "nValue":round({0}), "sValue":""'    ),
-    SensorDeviceHandler(r'(Illuminance)(\d*)'),
+    #SensorDeviceHandler(r'(Illuminance)(\d*)'),
     SensorDeviceHandler(r'(Pressure)(\d*)',                                     typeName='Barometer',       updArgs=' "nValue":0, "sValue":"{0};5"' ),
     SensorDeviceHandler(r'(Temperature)(\d*)',                                  typeName='Temperature',     updArgs=' "nValue":0, "sValue":"{0}"'   ),
     SensorDeviceHandler(r'(OBJTMP)(\d*)',                                       typeName='Temperature',     updArgs=' "nValue":0, "sValue":"{0}"'   ),
     SensorDeviceHandler(r'(AMBTMP)(\d*)',                                       typeName='Temperature',     updArgs=' "nValue":0, "sValue":"{0}"'   ),
+    MessageHandler(r'(ENERGY)',                 switchTo=energyDeviceHandlers   ), 
 ])
 
 
@@ -415,10 +445,10 @@ class DomoticzCommandHandler(MessageHandler):
         self.msg    = msg
 
     def handle(self, unitName, m, values, handled, ourValues):
-        Debug('PowerDeviceHandler({}, {}, {}, {}, {}'.format(unitName, m.group(), repr(values), repr(handled), repr(ourValues)))#,'One')
+        Debug('DomoticzCommandHandler({}, {}, {}, {}, {}'.format(unitName, m.group(), repr(values), repr(handled), repr(ourValues)))#,'One')
         g   = m.groups()
         val = list(g) + [*sum(list(zip([*ourValues],ourValues.values())),())][2:]
-        Debug('DomoticzCommandHandler::handle val={}'.format(repr(val)), 'On')
+        Debug('DomoticzCommandHandler::handle val={}'.format(repr(val)), 'One')
         return eval('{' + self.msg.format(*val) + '}')
 
 domoticzHandlers   = MessageHandlerList([

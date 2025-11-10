@@ -124,7 +124,7 @@ class Plugin:
             self.mqttClient.onMessage(Connection, Data)
 
     def onHeartbeat(self):
-        Debug("Plugin::onHeartbeat")
+        #Debug("Plugin::onHeartbeat")
         if self.mqttClient is not None:
             try:
                 # Reconnect if connection has dropped
